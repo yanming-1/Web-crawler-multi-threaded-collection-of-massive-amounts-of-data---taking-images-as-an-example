@@ -1,6 +1,7 @@
-# This is a multi-threaded web crawler.
-#function:
+# web crawler.
+This is a multi-threaded 
+## function:
 - Download images
 - Use multi-threading
-#usage:
+## usage:
 run photo_module.py
