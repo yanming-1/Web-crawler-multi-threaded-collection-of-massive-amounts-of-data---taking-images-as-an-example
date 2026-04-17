@@ -31,32 +31,29 @@ def get_photolist(photo_name, download_num):
     search_box = browser.find_element(By.NAME, 'search') 
     search_box.send_keys(photo_name)
     search_box.send_keys(Keys.RETURN)
-    while True:
-        time.sleep(5) 
-        html = browser.page_source
+    time.sleep(5)  # 等待搜索结果加载
+    html = browser.page_source
 
     while True:
         html = browser.page_source
 #        print(html)
         bs = BeautifulSoup(html, 'lxml')  # 解析網頁
-        #  先尋找標籤為 div, calss 為 'flex_grid ...' 的元素 (這區中才是免費圖庫)
-        #  再尋找所有標籤為 div, calss 為 'item' 的元素
-        photo_item = bs.find('div', {'class': 'flex_grid credits search_results'}).find_all(
-            'div', {'class': 'item'})
-        if len(photo_item) == 0:
+        # 尋找所有圖片元素
+        photo_items = bs.find_all('img', {'src': True})
+        if len(photo_items) == 0:
             print('Error, no photo link in page', page)
             return None
-        for i in range(len(photo_item)):
-            # 尋找標籤 img 並取出 'src' 之中的內容
-            photo = photo_item[i].find('img')['src']
+        for img in photo_items:
+            photo = img['src']
             if photo == '/static/img/blank.gif':
-                # 尋找標籤 img 並取出 'data-lazy' 之中的內容
-                photo = photo_item[i].find('img')['data-lazy']
-            if photo in photo_list:
-                #                print('photo duplicated in photo_list at page', page, photo)
-                continue
-            #若要下載較高解析度的圖, 可將下行取消註解
-#            photo = photo.replace('_340', '1280')  #更換為1280解析度
+                if 'data-lazy' in img.attrs:
+                    photo = img['data-lazy']
+                else:
+                    continue  # 跳過無效圖片
+            if photo in photo_list or not photo.startswith('https://cdn.pixabay.com/photo'):
+                continue  # 跳過重複或非Pixabay圖片
+            # 若要下載較高解析度的圖, 可將下行取消註解
+#            photo = photo.replace('_340', '1280')  # 更換為1280解析度
             photo_list.append(photo)  # 將找到的連結新增進 list 之中
             if len(photo_list) >= download_num:
                 print('end by get photo list size', len(photo_list))
@@ -65,9 +62,8 @@ def get_photolist(photo_name, download_num):
         page += 1  # 頁數加1
         # 找出下一頁的連結網址
         try:
-            next = browser.find_element_by_partial_link_text(
-                '›').get_attribute('href')
-            browser.get(next)
+            next_link = browser.find_element(By.PARTIAL_LINK_TEXT, '›').get_attribute('href')
+            browser.get(next_link)
         except:  # 沒下一頁了
             browser.close()
             return photo_list
