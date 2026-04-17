@@ -4,4 +4,4 @@ This is a multi-threaded web crawler.
 - Download images
 - Use multi-threading
 ## usage:
-run photo_module.py
+run photo.py
