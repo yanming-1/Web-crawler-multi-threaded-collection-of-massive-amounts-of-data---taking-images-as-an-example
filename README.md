@@ -5,5 +5,7 @@ This is a multi-threaded web crawler.
 - Use multi-threading
 ## usage:
 Main.py         - you can run this file
+
 photo_module.py - function
+
 photo.py        - this file does not support threading
