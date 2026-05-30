@@ -54,5 +54,3 @@ python Main.py
 - 篩選的寬高來自頁面 `srcset` 或 `width/height` 屬性：若網站未提供，寬高條件可能無效。
 - 若要在無頭（headless）或無瀏覽器環境運行，需自行調整 `photo_module.create_webdriver()` 或使用遠端 WebDriver。 
 - 請遵守各網站的使用條款與版權規範，僅下載有權使用的資源。
-
-需要我把 `requirements.txt` 生出來，或把互動輸入改成命令列參數（例如 `--source` / `--min-width`）嗎？
