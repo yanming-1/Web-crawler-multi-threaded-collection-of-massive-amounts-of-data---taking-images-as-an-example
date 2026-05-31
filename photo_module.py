@@ -2,40 +2,21 @@ import os
 import time
 import requests
 import logging
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import RequestException, Timeout, ConnectionError
+from tqdm import tqdm
 
-# 設置日誌
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-BASE_URL = "https://pixabay.com/zh/"
-PIXABAY_PHOTO_PREFIX = "https://cdn.pixabay.com/photo"
+PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "55770865-37d56e6b7c3009a4b1f996c31")
+PIXABAY_API_URL = "https://pixabay.com/api/"
 
 
-def create_webdriver():
-    """建立並回傳可供 Selenium 使用的 Chrome WebDriver。"""
-    try:
-        option = webdriver.ChromeOptions()
-        option.add_experimental_option("excludeSwitches", ["enable-automation"])
-        # 移除無頭模式，因為可能導致網站檢測
-        # option.add_argument("--headless")
-        option.add_argument("--no-sandbox")
-        option.add_argument("--disable-dev-shm-usage")
-        driver = webdriver.Chrome(options=option)
-        logging.info("WebDriver 創建成功")
-        return driver
-    except WebDriverException as e:
-        logging.error(f"創建 WebDriver 失敗: {e}")
-        raise
+def set_api_key(api_key):
+    global PIXABAY_API_KEY
+    if api_key:
+        PIXABAY_API_KEY = api_key
 
 
 def clean_extension(url):
-    """從圖片 URL 解析並回傳檔案副檔名。"""
     try:
         url = url.split("?")[0]
         _, extension = os.path.splitext(url)
@@ -48,7 +29,6 @@ def clean_extension(url):
 
 
 def download_pic(url, path, max_retries=3):
-    """下載單張圖片並儲存到指定路徑，包含重試邏輯。"""
     for attempt in range(max_retries):
         try:
             response = requests.get(url, timeout=15, stream=True)
@@ -64,7 +44,7 @@ def download_pic(url, path, max_retries=3):
         except (RequestException, Timeout, ConnectionError) as e:
             logging.warning(f"下載圖片失敗 (嘗試 {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # 指數退避
+                time.sleep(2 ** attempt)
             else:
                 logging.error(f"下載圖片最終失敗: {url}")
                 return False
@@ -76,106 +56,71 @@ def download_pic(url, path, max_retries=3):
             return False
 
 
-def parse_photo_urls(html, photo_list):
-    """解析 HTML 取得圖片連結並新增到清單中。"""
-    try:
-        soup = BeautifulSoup(html, "lxml")
-        for img in soup.find_all("img", {"src": True}):
-            photo = img["src"]
-            if photo == "/static/img/blank.gif":
-                photo = img.attrs.get("data-lazy")
-                if not photo:
-                    continue
+def fetch_photolist_api(photo_name, download_num):
+    if not PIXABAY_API_KEY:
+        logging.error("Pixabay API Key 未設定，請輸入有效的 API Key 或設定 PIXABAY_API_KEY 環境變數。")
+        return []
 
-            if not photo.startswith(PIXABAY_PHOTO_PREFIX):
-                continue
-            if photo in photo_list:
-                continue
-
-            photo_list.append(photo)
-    except Exception as e:
-        logging.error(f"解析 HTML 失敗: {e}")
-
-
-def collect_photo_urls(browser, download_num, max_pages=50):
-    """從瀏覽器頁面逐頁蒐集圖片連結直到達到所需數量。"""
-    photo_list = []
+    urls = []
     page = 1
-    wait = WebDriverWait(browser, 10)
+    per_page = min(download_num, 200)
 
-    while page <= max_pages:
+    while len(urls) < download_num:
+        params = {
+            "key": PIXABAY_API_KEY,
+            "q": photo_name,
+            "image_type": "photo",
+            "per_page": per_page,
+            "page": page,
+            "safesearch": "true",
+        }
+
         try:
-            html = browser.page_source
-            parse_photo_urls(html, photo_list)
-            if len(photo_list) >= download_num:
-                logging.info(f"已收集足夠圖片: {len(photo_list)}")
-                return photo_list[:download_num]
+            response = requests.get(PIXABAY_API_URL, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            hits = data.get("hits", [])
+
+            if not hits:
+                logging.info("API 查詢未找到任何圖片。")
+                break
+
+            for hit in hits:
+                url = hit.get("largeImageURL") or hit.get("webformatURL") or hit.get("previewURL")
+                if url:
+                    urls.append(url)
+                    if len(urls) >= download_num:
+                        break
+
+            if len(hits) < per_page:
+                break
 
             page += 1
-            # 等待下一頁鏈接出現
-            next_link = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "›")))
-            browser.get(next_link.get_attribute("href"))
-            time.sleep(2)
-        except (NoSuchElementException, TimeoutException):
-            logging.info("未找到下一頁連結，停止收集")
+        except RequestException as e:
+            logging.error(f"Pixabay API 請求失敗: {e}")
             break
-        except (TimeoutException, WebDriverException) as e:
-            logging.error(f"瀏覽器操作失敗: {e}")
+        except ValueError as e:
+            logging.error(f"解析 Pixabay API 回傳失敗: {e}")
             break
         except Exception as e:
-            logging.error(f"收集圖片連結時發生未知錯誤: {e}")
+            logging.error(f"取得 Pixabay API 圖片清單時發生未知錯誤: {e}")
             break
 
-    return photo_list[:download_num]
+    return urls[:download_num]
 
 
 def get_photolist(photo_name, download_num):
-    """使用 Selenium 搜尋關鍵字並取得圖片連結清單。"""
-    browser = None
     try:
-        browser = create_webdriver()
-        browser.get(BASE_URL)
-        time.sleep(3)  # 增加等待時間
-
-        # 等待搜尋框出現
-        wait = WebDriverWait(browser, 10)
-        search_box = wait.until(EC.presence_of_element_located((By.NAME, "search")))
-        
-        search_box.send_keys(photo_name)
-        search_box.send_keys(Keys.RETURN)
-        time.sleep(5)  # 等待搜尋結果載入
-
-        photo_list = collect_photo_urls(browser, download_num)
-        return photo_list
-    except NoSuchElementException as e:
-        logging.error(f"找不到搜尋框: {e}")
-        return []
-    except TimeoutException as e:
-        logging.error(f"等待元素超時: {e}")
-        return []
-    except (TimeoutException, WebDriverException) as e:
-        logging.error(f"Selenium 操作失敗: {e}")
-        return []
+        return fetch_photolist_api(photo_name, download_num)
     except Exception as e:
-        logging.error(f"取得圖片清單時發生未知錯誤: {e}")
+        logging.error(f"取得圖片清單時發生錯誤: {e}")
         return []
-    finally:
-        if browser:
-            try:
-                browser.quit()
-                logging.info("瀏覽器已關閉")
-            except Exception as e:
-                logging.warning(f"關閉瀏覽器時發生錯誤: {e}")
 
 
-def create_folder(photo_name, parent_folder=None):
-    """建立下載用資料夾並回傳根目錄路徑。"""
+def create_folder(photo_name, parent_folder):
     try:
-        if parent_folder is None:
-            parent_folder = input("請輸入要儲存的資料夾名稱: ").strip()
         if not parent_folder:
             parent_folder = "."
-
         folder_path = os.path.join(parent_folder, photo_name)
         os.makedirs(folder_path, exist_ok=True)
         logging.info(f"儲存目錄已建立或已存在: {folder_path}")
@@ -188,17 +133,24 @@ def create_folder(photo_name, parent_folder=None):
         raise
 
 
-def download_photos(photo_list, root_folder, photo_name):  # 迭代下載整批圖片到指定資料夾。
+def download_photos(photo_list, root_folder, photo_name, max_workers=5):
     target_folder = os.path.join(root_folder, photo_name)
     success_count = 0
     fail_count = 0
-    
-    for index, photo_url in enumerate(photo_list, 1):
-        target_path = os.path.join(target_folder, str(index))
-        if download_pic(photo_url, target_path):
-            success_count += 1
-        else:
-            fail_count += 1
-    
-    logging.info(f"下載統計: 成功 {success_count} 張，失敗 {fail_count} 張")
 
+    def _download(args):
+        index, url = args
+        target_path = os.path.join(target_folder, str(index))
+        return download_pic(url, target_path)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_download, (i, url)): i for i, url in enumerate(photo_list, 1)}
+        with tqdm(total=len(photo_list), desc="下載進度", unit="張") as pbar:
+            for future in as_completed(futures):
+                if future.result():
+                    success_count += 1
+                else:
+                    fail_count += 1
+                pbar.update(1)
+
+    logging.info(f"下載統計: 成功 {success_count} 張，失敗 {fail_count} 張")
